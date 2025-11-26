@@ -5,113 +5,70 @@ import argparse
 
 from pathlib import Path
 
-from config import PROJECT_ROOT, TRAINER_APP_PATH, EXPERIMENTS_DIR, KPCN_DENOISER_DIR, ExperimentConfig
-from tools.submit_train_job import Command, CommandBlock, Job, submit_job
+from kpcn_denoiser.config import KPCNConfig, ExperimentConfig
+from tools.submit_train_job import Command, CommandBlock, Job, submit_af_job
 from tools.run_tensorboard import launch_tensorboard
 
-EXPERIMENT_NAME = Path(__file__).stem
-WEIGHTS_OUT_NAME = EXPERIMENT_NAME + "_weights.pt"
-
-OUTPUT_DIR = EXPERIMENTS_DIR / EXPERIMENT_NAME
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-WEIGHTS_OUT_PATH = OUTPUT_DIR / "weights"
-WEIGHTS_OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-WEIGHTS_FILE_OUT_PATH = OUTPUT_DIR / "weights" / WEIGHTS_OUT_NAME
-WEIGHTS_FILE_OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-TENSORBOARD_LOG_DIR = OUTPUT_DIR / "tensorboard_logs"
-TENSORBOARD_LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-VALIDATION_DATASET_DIR = ML_DENOISER_DIR / "datasets" / "TGB" / "TGB001" / "validation" / "noisy"
-
-OUTPUT_IMAGES_DIR = ML_DENOISER_DIR / "output" / "experiments" / EXPERIMENT_NAME / "images"
-OUTPUT_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-
-OUTPUT_SPATIAL_DIR = OUTPUT_IMAGES_DIR / "spatial_denoised_validation"
-OUTPUT_SPATIAL_DIR.mkdir(parents=True, exist_ok=True)
-
-OUTPUT_EPOCH_SEQUENCE_DIR = OUTPUT_IMAGES_DIR / "epoch_sequence"
-OUTPUT_EPOCH_SEQUENCE_DIR.mkdir(parents=True, exist_ok=True)
-
-OUTPUT_TEMPORAL_SEQUENCE_DIR = OUTPUT_IMAGES_DIR / "temporal_sequence"
-OUTPUT_TEMPORAL_SEQUENCE_DIR.mkdir(parents=True, exist_ok=True)
-
+MODEL = "UNetResidual"
 
 def submit_experiment():
-    model = "UNetResidual"
-    loss = "L1Loss"
-    model_in_channels = 3
-    model_out_channels = 64
-    weights_in = WEIGHTS_OUT_PATH
-    weights_out = WEIGHTS_OUT_PATH
-    epochs = 240
-    batch_size = 8
-    patches_per_image = 200
-    patch_size = 128
-    n_first_samples = 200
-    n_first_frames = 3
-    save_checkpoint_every = 10
-    print_every_n_steps = 1
-    lr = 1e-4
+    config = ExperimentConfig(__file__)
+    global_config = KPCNConfig()
 
-    job_name = f"torch-{EXPERIMENT_NAME}-job"
+    job_name = f"torch-{config.name}-job"
     train_command = [
         "python",
-        TRAINER_APP_PATH,
+        global_config.trainer_app_path,
         "--mode train",
-        f"--model {model}",
-        f"--model-in-channels {model_in_channels}",
-        f"--model-out-channels {model_out_channels}",
-        f"--loss {loss}",
-        f"--input {TGB_DATASET_DIR}",
-        f"--output {OUTPUT_DIR}",
-        f"--weights-out {weights_out}",
-        f"--weights-in {weights_in}",
-        f"--epochs {epochs}",
-        f"--batch-size {batch_size}",
-        f"--patches-per-image {patches_per_image}",
-        f"--patch-size {patch_size}",
-        f"--n-first-samples {n_first_samples}",
-        f"--n-first-frames {n_first_frames}",
-        f"--save-checkpoint-every {save_checkpoint_every}",
-        f"--print-every-n-step {print_every_n_steps}",
-        f"--lr {lr}",
-        f"--tensorboard-output {TENSORBOARD_LOG_DIR}"
+        f"--model {MODEL}",
+        f"--model-in-channels 3",
+        f"--model-out-channels 64",
+        f"--loss L1Loss",
+        f"--input {config.training_dataset}",
+        f"--output {config.output_dir}",
+        f"--weights-out {config.weights_out_path}",
+        f"--weights-in {config.weights_out_path}",
+        f"--epochs 240",
+        f"--batch-size 8",
+        f"--patches-per-image 200",
+        f"--patch-size 128",
+        f"--n-first-samples 200",
+        f"--n-first-frames 3",
+        f"--save-checkpoint-every 5",
+        f"--print-every-n-step 1",
+        f"--lr 1e-4",
+        f"--tensorboard-output {config.tensorboard_log_dir}"
     ]
     train_command = " ".join(map(str, train_command))
 
     spatial_validation_command= [
         "python",
-        TRAINER_APP_PATH,
+        global_config.trainer_app_path,
         "--mode apply",
-        f"--input {VALIDATION_DATASET_DIR}",
-        f"--output {OUTPUT_SPATIAL_DIR}",
-        f"--weights-in {weights_in}",
+        f"--input {config.validation_dataset}",
+        f"--output {config.output_spatial_dir}",
+        f"--weights-in {config.weights_out_path}",
     ]
     spatial_validation_command = " ".join(map(str, spatial_validation_command))
 
     seqence_over_epoch_command = [
-        AF_WRAPPER_PATH,
         "python",
-        TRAINER_APP_PATH,
+        global_config.trainer_app_path,
         "--mode apply_epoch_sequence",
-        f"--input {VALIDATION_DATASET_DIR}",
-        f"--output {OUTPUT_EPOCH_SEQUENCE_DIR}",
-        f"--weights-in {weights_in}",
+        f"--input {config.validation_dataset}",
+        f"--output {config.output_epoch_sequence_dir}",
+        f"--weights-in {config.weights_out_path}",
     ]
     seqence_over_epoch_command = " ".join(map(str, seqence_over_epoch_command))
 
 
-    char_human_closeup_temporal_sequence = TGB_DATASET_DIR / "TGB1004140" / "chars" / "rgba" / "noisy"
-    out = OUTPUT_TEMPORAL_SEQUENCE_DIR / 'TGB1004140_char_human_closeup'
+    char_human_closeup_temporal_sequence = config.training_dataset / "TGB1004140" / "chars" / "rgba" / "noisy"
+    out = config.output_temporal_sequence_dir / 'TGB1004140_char_human_closeup'
     out.mkdir(parents=True, exist_ok=True)
-    char_human_closeup_temporal_weights_in = WEIGHTS_OUT_PATH / "exp_001_overfit_one_weights_checkpoint.0200.json"
+    char_human_closeup_temporal_weights_in = config.weights_out_path / "exp_001_overfit_one_weights_checkpoint.0200.json"
     temporal_sequence_command = [
-        AF_WRAPPER_PATH,
         "python",
-        TRAINER_APP_PATH,
+        global_config.trainer_app_path,
         "--mode apply",
         f"--input {char_human_closeup_temporal_sequence}",
         f"--output {out}",
@@ -152,9 +109,10 @@ def submit_experiment():
         ]
     )
 
-    submit_job(job)
+    submit_af_job(job)
+    launch_tensorboard(config.tensorboard_log_dir, port=6006)
 
 if __name__ == "__main__":
     submit_experiment()
-    launch_tensorboard(TENSORBOARD_LOG_DIR, port=6006)
+    
 

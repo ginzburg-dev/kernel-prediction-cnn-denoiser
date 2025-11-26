@@ -5,6 +5,7 @@ from typing import Tuple
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.optim import Adam
 from torchvision import transforms
 from PIL import Image
@@ -15,6 +16,8 @@ def get_model(name: str, in_channel: int, out_channel: int) -> nn.Module:
         return  UNet6Residual(channels=in_channel, base=out_channel)
     elif name == "UNetResidual":
         return UNetResidual(channels=in_channel, base=out_channel)
+    elif name == "UNetKPCMMedium":
+        return UNetKPCMMedium(in_channels=in_channel, base=out_channel)
     else:
         msg = f"Unknown model name: {name}"
         raise ValueError(msg)
@@ -25,6 +28,8 @@ def get_model_code_name(model: str, in_channels: int, out_channels) -> str:
         return f"unet6res_{in_channels}ch_{out_channels}base"
     elif model == "UNetResidual":
         return f"unetres_{in_channels}ch_{out_channels}base"
+    elif model == "UNetKPCMMedium":
+        return f"unetkpcmmed_{in_channels}ch_{out_channels}base"
     else:
         msg = f"Unknown model name: {model}"
         raise ValueError(msg)
@@ -124,3 +129,68 @@ class UNetResidual(nn.Module):
         noise_pred = self.out_conv(d1)
         clean_pred = noisy - noise_pred
         return clean_pred
+
+
+class UNetKPCMMedium(nn.Module):
+    def __init__(self, in_channels=3, base=64, kernel_size=3) -> None:
+        super().__init__()
+        self.k = kernel_size
+        self.k2 = self.k * self.k
+
+        self.e1 = self._conv_block(in_channels, base)
+        self.pool1 = nn.MaxPool2d(2)
+
+        self.e2 = self._conv_block(base, base * 2)
+        self.pool2 = nn.MaxPool2d(2)
+
+        self.bn = self._conv_block(base * 2, base * 4)
+
+        self.up2 = nn.ConvTranspose2d(base * 4, base * 2, kernel_size=2, stride=2)
+        self.dec2 = self._conv_block(base*4, base*2)
+
+        self.up1 = nn.ConvTranspose2d(base * 2, base, kernel_size=2, stride=2)
+        self.dec1 = self._conv_block(base*2, base)
+
+        self.out_kern = nn.Conv2d(base, out_channels=self.k2, kernel_size=1)
+
+
+    def _conv_block(self, in_ch: int, out_ch: int) -> nn.Module:
+        return nn.Sequential(
+            nn.Conv2d(in_channels=in_ch, out_channels=out_ch, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels=out_ch, out_channels=out_ch, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, noisy: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = noisy.shape
+
+        x1 = self.e1(noisy)
+        p1 = self.pool1(x1)
+
+        x2 = self.e2(p1)
+        p2 = self.pool2(x2)
+
+        b = self.bn(p2)
+
+        u2 = self.up2(b)
+        u2 = torch.cat([u2, x2], dim=1)
+        d2 = self.dec2(u2)
+
+        u1 = self.up1(d2)
+        u1 = torch.cat([u1, x1], dim=1)
+        d1 = self.dec1(u1)
+
+        raw_weights = self.out_kern(d1)
+
+        weights = F.softmax(raw_weights, dim=1)
+        weights_flat = weights.view(B, self.k2, H*W)
+        weights_exp = weights_flat.unsqueeze(1)
+        print(f"weights_flat:\n{weights_flat}\n{weights_flat.shape}")
+        patches = F.unfold(input=noisy, kernel_size=self.k, padding=self.k // 2)
+        print(f"patches:\n{patches}\n{patches.shape}")
+        patches_c = patches.view(B, C, self.k2, H*W)
+        out_flat = (weights_flat * patches_c).sum(dim=2)
+
+        out = out_flat.view(B, C, H, W)
+        return out
