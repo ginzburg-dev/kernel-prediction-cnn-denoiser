@@ -21,26 +21,37 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from torchvision import transforms
 from PIL import Image
 
+
 from kpcn_denoiser.models import UNet6Residual, UNetResidual, get_model
 from kpcn_denoiser.losses import get_loss
 from kpcn_denoiser.training import fit, evaluate
-from kpcn_denoiser.utils import save_training_parameters, get_frame_number, get_clean_basename
+from kpcn_denoiser.utils import (
+    save_training_parameters,
+    get_frame_number,
+    get_clean_basename,
+    apply_model_to_tensor_tiled,
+    get_lats_checkpoint,
+)
 from kpcn_denoiser.dataset import DenoiserPatchDataset, load_image_tensor, save_image, collect_images
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--mode", choices=["train", "apply", "evaluate", "apply_epoch_sequence"], required=True)
 
-    p.add_argument("--input", required=True, help="input (`dir` - for train, `file` - for apply)")
+    p.add_argument("--input", required=True, help="input (`dir` - for train, `file` - for apply)") 
     p.add_argument("--output", help="denoised output")
 
     p.add_argument("--model", default="UNetResidual")
     p.add_argument("--loss", default="L1Loss")
     p.add_argument("--model-in-channels", type=int, default=3)
     p.add_argument("--model-out-channels", type=int, default=64)
+    p.add_argument("--kernel-size", type=int, default=35)
+    p.add_argument("--target-shot", default="", help="Target shot dataset")
+    p.add_argument("--checkpoints-dir", default="")
     p.add_argument("--weights-in", default="denoiser.pt")
     p.add_argument("--weights-out", default="denoiser.pth")
     p.add_argument("--epochs", type=int, default=50)
+    p.add_argument("--continue-training", type=bool, default=False)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--patches-per-image", type=int, default=100)
@@ -55,14 +66,25 @@ def parse_args():
 
 
 def train_mode(args, device) -> None:
+    print(args.input)
     dataset = DenoiserPatchDataset(
         args.input,
         cache_images=True,
         patch_size=args.patch_size,
+        shot=args.target_shot,
         split_by_patches=True,
         patches_per_image=args.patches_per_image,
         n_first_samples=args.n_first_samples,
         n_first_frames=args.n_first_frames
+    )
+
+    noisy, clean = dataset[0]
+    print("sample noisy shape:", noisy.shape, "clean shape:", clean.shape)
+    print(
+        "sample noisy-clean max:",
+        (noisy - clean).abs().max().item(),
+        "mean:",
+        (noisy - clean).abs().mean().item(),
     )
 
     cv_ratio = 0.2
@@ -92,7 +114,12 @@ def train_mode(args, device) -> None:
         pin_memory=True,
     )
 
-    model = get_model(args.model, args.model_in_channels, args.model_out_channels).to(device)
+    model = get_model(args.model, args.model_in_channels, args.model_out_channels, args.kernel_size).to(device)
+    if args.continue_training and args.checkpoints_dir:
+        latst_checkpoint = get_lats_checkpoint(args.checkpoints_dir)
+        print(f"[Continue training] loading the last state of model: {latst_checkpoint}")
+        last_state = torch.load(latst_checkpoint, map_location=device, weights_only=True)
+        model.load_state_dict(last_state["model_state"])
     optimizer = Adam(model.parameters(), lr=args.lr)
     loss_fn = get_loss(args.loss)
 
@@ -100,9 +127,10 @@ def train_mode(args, device) -> None:
 
     save_training_parameters(
         path=param_path,
-        model_name="UNetResidual",
-        in_channels=3,
-        out_channels=64,
+        model_name=args.model,
+        in_channels=args.model_in_channels,
+        out_channels=args.model_out_channels,
+        kernel_size=args.kernel_size,
         epochs=args.epochs,
         batch_size=args.batch_size,
         patches_per_image=args.patches_per_image,
@@ -119,6 +147,7 @@ def train_mode(args, device) -> None:
         cv_loader=cv_loader,
         optimizer=optimizer,
         loss_fn=loss_fn,
+        continue_training=args.continue_training,
         device=device,
         save_checkpoint_every=args.save_checkpoint_every,
         epochs=args.epochs,
@@ -152,11 +181,14 @@ def apply_model_to_tensor(model, noisy: torch.Tensor, device: torch.device) -> t
         with torch.no_grad():
             denoised_padded = model(noisy_padded)
 
+        diff = (denoised_padded - noisy_padded).abs()
+        print("apply: max diff:", diff.max().item(), "mean diff:", diff.mean().item())
+
         return denoised_padded[..., :h, :w]
 
 
 def apply_mode(args, device) -> None:
-    model = get_model(args.model, args.model_in_channels, args.model_out_channels).to(device)
+    model = get_model(args.model, args.model_in_channels, args.model_out_channels, args.kernel_size).to(device)
     state = torch.load(args.weights_in, map_location=device, weights_only=True)
     if Path(args.weights_in).suffix.lower() == ".json":
         model.load_state_dict(state["model_state"])
@@ -180,9 +212,23 @@ def apply_mode(args, device) -> None:
 
     output_path.mkdir(parents=True, exist_ok=True)
 
+    kernel_size = getattr(args, "kernel_size", 35)
+    tile_size = getattr(args, "tile_size", 512)
+
     for n, noisy_path in enumerate(img):
         noisy, header = load_image_tensor(noisy_path)
-        denoised = apply_model_to_tensor(model, noisy, device)
+
+        with torch.no_grad():
+            denoised = apply_model_to_tensor_tiled(
+                model=model,
+                noisy=noisy,
+                device=device,
+                kernel_size=kernel_size,
+                core_step=256,   # можно 256 или 320
+                margin=64,       # запас по контексту
+            )
+
+        #denoised = apply_model_to_tensor(model, noisy, device)
         frame = get_frame_number(noisy_path)
         basename = get_clean_basename(noisy_path)
         if frame is not None:
@@ -202,8 +248,8 @@ def apply_epoch_sequence_mode(args, device) -> None:
     """Apply model weights from a sequence of epochs to input images.
     in_weights should contain a glob pattern with epoch number placeholder, e.g. denoiser_checkpoint_*.pt.
     """
-    model = get_model(args.model, args.model_in_channels, args.model_out_channels).to(device)
-    weights_paths = sorted(glob.glob(str(Path(args.weights_in).parent / "*checkpoint*.json")))
+    model = get_model(args.model, args.model_in_channels, args.model_out_channels, args.kernel_size).to(device)
+    weights_paths = sorted(glob.glob(str(Path(args.weights_in) / "*checkpoint*.json")))
     print(f"Found {len(weights_paths)} weights files matching pattern: {args.weights_in}*checkpoint*.json")
 
     for n, weights_path in enumerate(weights_paths):
@@ -224,20 +270,29 @@ def apply_epoch_sequence_mode(args, device) -> None:
         print(f"Image list: {img}")
 
         output = Path(args.output)
-        if output.is_dir:
+        if output.is_dir():
             output_path = output
         else:
             output_path = output.parent
 
         output_path.mkdir(parents=True, exist_ok=True)
+        kernel_size = getattr(args, "kernel_size", 35)
+        tile_size = getattr(args, "tile_size", 512)
 
-        for n, noisy_path in enumerate(img):
+        for noisy_path in img:
             noisy, header = load_image_tensor(noisy_path)
-            denoised = apply_model_to_tensor(model, noisy, device)
+            denoised = apply_model_to_tensor_tiled(
+                model=model,
+                noisy=noisy,
+                device=device,
+                kernel_size=kernel_size,
+                core_step=256,   # можно 256 или 320
+                margin=64,       # запас по контексту
+            )
             frame = get_frame_number(noisy_path)
             basename = get_clean_basename(noisy_path)
             if frame is not None:
-                output_file = output_path / f"{basename}_{frame}_denoised.{int(state["epoch"]):04d}{noisy_path.suffix}"
+                output_file = output_path / f"{basename}_{frame}_denoised.{int(state['epoch']):04d}{noisy_path.suffix}"
             else:
                 output_file = output_path / f"{basename}_denoised.{frame}{noisy_path.suffix}"
             
@@ -245,14 +300,16 @@ def apply_epoch_sequence_mode(args, device) -> None:
             print(f"Saved denoised image to: {output_file}")
 
         if n % 1 == 0:
-            progress = int(n /len(weights_paths) * 100)
+            progress = int((n /len(weights_paths)) * 100)
             print(f"PROGRESS: {progress}%")
             sys.stdout.flush()
 
 
 def evaluate_mode(args, device) -> None:
-    model = get_model(args.model, args.model_in_channels, args.model_out_channels).to(device)
+    model = get_model(args.model, args.model_in_channels, args.model_out_channels, args.kernel_size).to(device)
     state = torch.load(args.weights_in, map_location=device, weights_only=True)
+    if "model_state" in state:
+        state = state["model_state"]
     model.load_state_dict(state)
     
     dataset = DenoiserPatchDataset(

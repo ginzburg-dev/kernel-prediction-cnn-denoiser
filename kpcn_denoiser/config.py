@@ -11,7 +11,7 @@ class KPCNConfig():
     project_root = Path(__file__).resolve().parent.parent
     dotenv_file = project_root / ".env"
     kpcn_denoiser = project_root / "kpcn_denoiser"
-    trainer_app_path = project_root / "training/train.py"
+    trainer_app_path = project_root / "kpcn_denoiser" / "run_train.py"
     out_dir = project_root / "output"
     experiments_dir = out_dir / "experiments"
 
@@ -22,11 +22,13 @@ class ExperimentConfig():
             self,
             name: str,
             training_dataset_env: str = "KPCN_TRAINING_DATASET",
-            validation_dataset_env: str = "KPCN_VALIDATION_DATASET"
+            validation_dataset_env: str = "KPCN_VALIDATION_DATASET",
+            wrapper_env: str = "KPCN_WRAPPER"
     ) -> None:
         self.global_config = KPCNConfig()
         self.name: Path = Path(name)
 
+        self.kpcn_wrapper: Path = Path(os.getenv(wrapper_env, ""))
         self.training_dataset: Path = Path(os.getenv(training_dataset_env, ""))
         self.validation_dataset: Path = Path(os.getenv(validation_dataset_env, ""))
 
@@ -34,7 +36,10 @@ class ExperimentConfig():
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.weights_out_path: Path = self.output_dir / "weights"
-        self.weights_out_path.parent.mkdir(parents=True, exist_ok=True)
+        self.weights_out_path.mkdir(parents=True, exist_ok=True)
+
+        self.chekpoints_dir: Path = self.weights_out_path / "checkpoints"
+        self.chekpoints_dir.mkdir(parents=True, exist_ok=True)
 
         self.weights_file_out_path = self.weights_out_path / f"{str(self.name)}_weights.pt"
 

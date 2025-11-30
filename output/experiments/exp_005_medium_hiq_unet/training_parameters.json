@@ -1,0 +1,13 @@
+{
+    "model_name": "HiqUnetKPCNMedium",
+    "out_channels": 64,
+    "in_channels": 3,
+    "kernel_size": 35,
+    "epochs": 70,
+    "batch_size": 8,
+    "patches_per_image": 100,
+    "patch_size": 128,
+    "n_first_samples": 100000,
+    "n_first_frames": 100000,
+    "lr": 0.0001
+}

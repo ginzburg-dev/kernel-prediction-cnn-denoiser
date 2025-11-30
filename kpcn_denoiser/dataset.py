@@ -26,8 +26,9 @@ class DenoiserPatchDataset(Dataset):
             self,
             input_dir: str | Path,
             patch_size: int,
+            shot: str | None = None,
             noise_level: Sequence[str] = ("high", "low", "verylow", "aggressive", "extreme", "mid"),
-            subset: Sequence[str] = ("anim"),
+            subset: Sequence[str] = ("anim",),
             layers: Sequence[str] = ("chars", "env"),
             cache_images: bool = True,
             split_by_patches: bool= True,
@@ -38,16 +39,18 @@ class DenoiserPatchDataset(Dataset):
         self.input_dir = Path(input_dir)
         self.samples: list[SampleInfo] = []
         for layer in layers:
-            self.samples.extend(collect_clean_noisy_samples(
-                root=self.input_dir,
-                layer=layer,
-                noise_levels=("high", "low", "verylow", "aggressive", "extreme", "mid"),
-                subsets=("anim"),
-                aovs=("rgba"),
-                ext=".exr",
-                n_first_samples=n_first_samples,
-                n_first_frames=n_first_frames
-            )
+            self.samples.extend(
+                collect_clean_noisy_samples(
+                    root=self.input_dir,
+                    layer=layer,
+                    shot=shot,
+                    noise_levels=noise_level,
+                    subsets=subset,
+                    aovs=("rgba",),
+                    ext=".exr",
+                    n_first_samples=n_first_samples,
+                    n_first_frames=n_first_frames
+                )
         )
         print(f"[dataset] collected {len(self.samples)} pairs")
 
@@ -137,10 +140,11 @@ def frame_key(path: Path) -> str:
 
 def collect_clean_noisy_samples(
     root: Path,
+    shot: str | None = None,
     layer: str = "chars",
     noise_levels: Sequence[str] = ("high",),
     subsets: Sequence[str] = ("anim",),
-    aovs: Sequence[str] = (),
+    aovs: Sequence[str] = ("rgba",),
     ext: str = ".exr",
     n_first_samples: int | None = None,
     n_first_frames: int | None = None
@@ -150,6 +154,9 @@ def collect_clean_noisy_samples(
 
     for shot_dir in sorted(root.iterdir()):
         if not shot_dir.is_dir():
+            continue
+        
+        if shot and shot_dir.name != shot:
             continue
 
         rgba_dir = shot_dir / layer / "rgba"
@@ -400,6 +407,7 @@ def random_patch_pair(
 
     y = random.randint(0, H - patch_size)
     x = random.randint(0, W - patch_size)
+
     return (
         input[..., y:y+patch_size, x:x+patch_size],
         target[..., y:y+patch_size, x:x+patch_size],

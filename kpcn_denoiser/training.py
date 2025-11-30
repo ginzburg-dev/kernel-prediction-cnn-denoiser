@@ -10,7 +10,8 @@ from kpcn_denoiser.dataset import (
 )
 
 from kpcn_denoiser.utils import (
-    save_training_parameters
+    save_training_parameters,
+    clean_dir
 )
 
 import torch
@@ -27,6 +28,7 @@ def train_one_epoch(
     optimizer: Optimizer,
     loss_fn: nn.Module,
     device: torch.device,
+    threshold: float = 1e-5,
 ) -> float:
     """One epoch train step."""
     model.train()
@@ -40,6 +42,9 @@ def train_one_epoch(
             input_batch = input_batch.to(device, non_blocking=True)
             target_batch = target_batch.to(device, non_blocking=True)
 
+            if abs(input_batch - target_batch).mean() < threshold:
+               continue
+
             pred = model(input_batch)
             loss = loss_fn(pred, target_batch)
 
@@ -52,7 +57,7 @@ def train_one_epoch(
 
             if (batch_idx + 1) % (max(total_batches/4, 1)) == 0 or (batch_idx + 1) == total_batches:
                 print(f"[epoch batch] {batch_idx+1}/{total_batches}", flush=True)
-
+    print(f"[train_one_epoc] trained batches: {int(num_steps)}/{total_batches}", flush=True)
     return running_loss/max(num_steps, 1)
 
 @torch.no_grad()
@@ -66,6 +71,7 @@ def evaluate(
     model.eval()
     num_batches = 0.0
     running_loss = 0.0
+
     for input, target in dataloader:
             input = input.to(device, non_blocking=True)
             target = target.to(device, non_blocking=True)
@@ -89,6 +95,7 @@ def fit(
     optimizer: Optimizer,
     loss_fn: nn.Module,
     device: torch.device,
+    continue_training: bool,
     epochs: int,
     save_checkpoint_every: int,
     output_weights: str | Path,
@@ -117,14 +124,20 @@ def fit(
         print(f"Tensorboard log dir: {log_dir}")
 
     if output_weights.is_dir():
-        output_weights = output_weights / "model_weights.pt"
-    output_weights.parent.mkdir(parents=True, exist_ok=True)
-    last_output_weights = output_weights.parent / (output_weights.stem + "_last" + output_weights.suffix)
-    output_best_weights = output_weights.with_name(output_weights.stem + 
-                                                        "_best" + output_weights.suffix)
-    checkpoint_output_dir = output_weights.parent / "checkpoints"
-    checkpoint_output_dir.mkdir(parents=True, exist_ok=True)
-    
+        weights_name = output_weights.parent.name
+        checkpoint_output_dir = output_weights / "checkpoints"
+        last_output_weights = output_weights / (weights_name + "_last.pt")
+        output_best_weights = output_weights / (weights_name + "_best.pt")
+    else:
+        weights_name = output_weights.parent.parent.name
+        checkpoint_output_dir = output_weights / "checkpoints"
+        last_output_weights = output_weights.parent / (weights_name + "_last.pt")
+        output_best_weights = output_weights.parent / (weights_name + "_best.pt")
+
+    if checkpoint_output_dir.exists() and not continue_training:
+        clean_dir(checkpoint_output_dir)
+        print("Checkpoints cleaned up.")
+
     writer_train_loss = SummaryWriter(log_dir=str(log_dir / "train_loss"))
     writer_cv_loss = SummaryWriter(log_dir=str(log_dir / "cv_loss"))
 
@@ -135,7 +148,16 @@ def fit(
     print(f"Train batches per epoch: {len(train_loader)}", flush=True)
     print("PROGRESS: 0%", flush=True)
 
-    for epoch in range(1, epochs + 1):
+    start_epoch = model["epoch"] + 1 if continue_training else 1
+
+    if start_epoch > epochs:
+        print(f"Start epoch > total epoch. Skipping.")
+        return (
+        model.state_dict(),
+        output_weights,
+        )
+
+    for epoch in range(start_epoch, epochs + 1):
         train_loss: float = train_one_epoch(
             model,
             train_loader,
@@ -158,15 +180,19 @@ def fit(
             writer_cv_loss.add_scalar("loss/train",cv_loss, epoch)
 
         if epoch % save_checkpoint_every == 0:
-            checkpoint_output_path = checkpoint_output_dir / f"{output_weights.stem}_checkpoint.{epoch:04d}.json"
+            checkpoint_output_path = checkpoint_output_dir / f"{weights_name}_checkpoint.{epoch:04d}.json"
             checkpoint_data = {
                 "train_loss": train_loss,
                 "cv_loss": cv_loss,
                 "epoch": epoch,
-                "model_state": model.state_dict()
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict()
             }
             torch.save(checkpoint_data, checkpoint_output_path)
             print(f"Model checkpoint saved to {checkpoint_output_path}")
+
+        torch.save(model.state_dict(), last_output_weights)
+        print(f"Model last weights saved to {last_output_weights}")    
 
         if epoch % print_every_n_steps == 0:
             progress = int(epoch / epochs * 100)
@@ -175,9 +201,10 @@ def fit(
             sys.stdout.flush()
 
     print(f"\nModel was trained successfully!")
-    torch.save(model.state_dict(), last_output_weights)
-    print(f"Model last weights saved to {last_output_weights}")
     print(f"Model best weights saved to {output_best_weights}")
+    if output_weights.is_file():
+        torch.save(model.state_dict(), output_weights)
+        print(f"Model last weights also saved to {output_weights}")
     writer_train_loss.close()
     writer_cv_loss.close()
     

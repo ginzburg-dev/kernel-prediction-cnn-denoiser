@@ -1,0 +1,13 @@
+{
+    "model_name": "UNetKPCMMedium",
+    "out_channels": 64,
+    "in_channels": 3,
+    "kernel_size": 35,
+    "epochs": 50,
+    "batch_size": 8,
+    "patches_per_image": 200,
+    "patch_size": 128,
+    "n_first_samples": 50,
+    "n_first_frames": 1,
+    "lr": 0.0001
+}

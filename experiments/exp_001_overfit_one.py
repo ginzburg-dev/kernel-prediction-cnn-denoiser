@@ -11,12 +11,17 @@ from tools.run_tensorboard import launch_tensorboard
 
 MODEL = "UNetResidual"
 
-def submit_experiment():
-    config = ExperimentConfig(__file__)
-    global_config = KPCNConfig()
+def get_py_module_name():
+    return Path(__file__).stem
 
+
+def submit_experiment():
+    config = ExperimentConfig(get_py_module_name())
+    global_config = KPCNConfig()
+    
     job_name = f"torch-{config.name}-job"
     train_command = [
+        config.kpcn_wrapper,
         "python",
         global_config.trainer_app_path,
         "--mode train",
@@ -42,6 +47,7 @@ def submit_experiment():
     train_command = " ".join(map(str, train_command))
 
     spatial_validation_command= [
+        config.kpcn_wrapper,
         "python",
         global_config.trainer_app_path,
         "--mode apply",
@@ -52,6 +58,7 @@ def submit_experiment():
     spatial_validation_command = " ".join(map(str, spatial_validation_command))
 
     seqence_over_epoch_command = [
+        config.kpcn_wrapper,
         "python",
         global_config.trainer_app_path,
         "--mode apply_epoch_sequence",
@@ -67,6 +74,7 @@ def submit_experiment():
     out.mkdir(parents=True, exist_ok=True)
     char_human_closeup_temporal_weights_in = config.weights_out_path / "exp_001_overfit_one_weights_checkpoint.0200.json"
     temporal_sequence_command = [
+        config.kpcn_wrapper,
         "python",
         global_config.trainer_app_path,
         "--mode apply",
@@ -108,7 +116,7 @@ def submit_experiment():
             )
         ]
     )
-
+    
     submit_af_job(job)
     launch_tensorboard(config.tensorboard_log_dir, port=6006)
 

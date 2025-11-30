@@ -1,3 +1,20 @@
 .venv
+*.pyc
 
 .env
+
+tools/wrappers/env.bat
+
+/output/**/images/
+
+/output/**/tensorboard_logs/
+
+/output/jobs/
+
+/output/**/*.exr
+
+/output/**/*.png
+
+/output/experiments/**/weights/checkpoints/*.json
+
+/output/experiments/**/weights/checkpoints/*.json

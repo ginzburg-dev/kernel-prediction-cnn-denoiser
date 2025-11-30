@@ -7,7 +7,7 @@ from typing import List
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from config import PROJECT_ROOT, TRAINER_APP_PATH
+from kpcn_denoiser.config import KPCNConfig
 
 @dataclass
 class Command:
@@ -34,11 +34,13 @@ def submit_af_job(job: Job, parser: str = "generic") -> None:
     As CLI: python -m ml_denoiser.utils.submit_af_job <task name> <command wih args>
         example: python -m ml_denoiser.utils.submit_af_job denoise_dmx004x_model --mode train --input noisy.png --target clean.png --output denoised.png --epochs 100
     """
+    config = KPCNConfig()
+
     af_job = af.Job(job.name)
 
     for cmd_block in job.command_blocks:
         block = af.Block(cmd_block.title, cmd_block.service)
-        block.setWorkingDirectory(working_directory=str(PROJECT_ROOT))
+        block.setWorkingDirectory(working_directory=str(config.project_root))
         block.setParser(parser=parser)
         for cmd in cmd_block.commands:
             task = af.Task(cmd.title)
@@ -51,6 +53,7 @@ def submit_af_job(job: Job, parser: str = "generic") -> None:
     af_job.send()
 
 if __name__ == "__main__":
+    config = KPCNConfig()
     submit_af_job(Job(
         name=f"torch_{sys.argv[1]}_job",
         command_blocks=[
@@ -59,7 +62,7 @@ if __name__ == "__main__":
                 commands=[
                     Command(
                         title="Training model",
-                        command=f"python {TRAINER_APP_PATH} {' '.join(sys.argv[2:])}"
+                        command=f"python {config.trainer_app_path} {' '.join(sys.argv[2:])}"
                     )
                 ]
             )
